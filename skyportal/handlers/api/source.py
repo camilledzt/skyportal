@@ -62,7 +62,6 @@ from ...models import (
     ObservingRun,
     PhotometricSeries,
     Photometry,
-    PublicRelease,
     Source,
     SourceLabel,
     SourceNotification,
@@ -71,14 +70,12 @@ from ...models import (
     Spectrum,
     Telescope,
     Thumbnail,
-    TNSRobotGroup,
-    TNSRobotGroupAutoreporter,
-    TNSRobotSubmission,
     Token,
     User,
 )
 from ...utils.asynchronous import run_async
 from ...utils.calculations import great_circle_distance
+from ...utils.data_access import auto_source_publishing
 from ...utils.offset import (
     ALL_NGPS_SNCOSMO_BANDS,
     _calculate_best_position_for_offset_stars,
@@ -655,11 +652,11 @@ def create_annotations_query(
 
 
 def post_source(data, user_id, session, refresh_source=True):
-    """Post source to database.
+    """Post source to the database.
     data: dict
         Source dictionary
     user_id : int
-        SkyPortal ID of User posting the GcnEvent
+        SkyPortal ID of User posting the source
     session: sqlalchemy.Session
         Database session for this transaction
     refresh_source : bool
@@ -679,17 +676,12 @@ def post_source(data, user_id, session, refresh_source=True):
             "Only letters, numbers, underscores, semicolons, colons, +, -, and periods are allowed in source ID"
         )
 
-    obj = session.scalars(Obj.select(user).where(Obj.id == data["id"])).first()
-    if obj is None:
-        obj_already_exists = False
-    else:
-        obj_already_exists = True
     schema = Obj.__schema__()
 
-    ra = data.get("ra", None)
-    dec = data.get("dec", None)
-
-    if ((ra is None) or (dec is None)) and not obj_already_exists:
+    ra = data.get("ra")
+    dec = data.get("dec")
+    existing_obj = session.scalars(Obj.select(user).where(Obj.id == data["id"])).first()
+    if not existing_obj and (ra is None or dec is None):
         raise AttributeError("RA/Declination must not be null for a new Obj")
 
     user_group_ids = [g.id for g in user.groups]
@@ -720,7 +712,7 @@ def post_source(data, user_id, session, refresh_source=True):
         )
     # we use the ignore_if_in_group_ids field, to cancel saving to the specified group_ids if there is already a source
     # saved to one of the ignore_if_in_group_ids
-    # ignore_if_in_group_ids is a dict, where each keys are the group_ids for which we want to specify groups to avoid
+    # ignore_if_in_group_ids is a dict, where each key is the group_id for which we want to specify groups to avoid
     ignore_if_in_group_ids = {}
     if "ignore_if_in_group_ids" in data:
         if not isinstance(data["ignore_if_in_group_ids"], dict):
@@ -790,7 +782,7 @@ def post_source(data, user_id, session, refresh_source=True):
 
     data.pop("saver_per_group_id", None)
 
-    if not obj_already_exists:
+    if not existing_obj:
         try:
             obj = schema.load(data)
         except ValidationError as e:
@@ -801,8 +793,10 @@ def post_source(data, user_id, session, refresh_source=True):
 
         # if the object doesn't exist, we can ignore the ignore_if_in_group_ids field
         ignore_if_in_group_ids = {}
+    else:
+        obj = existing_obj
 
-    if (ra is not None) and (dec is not None):
+    if ra is not None and dec is not None:
         # This adds a healpix index for a new object being created
         obj.healpix = ha.constants.HPX.lonlat_to_healpix(ra * u.deg, dec * u.deg)
 
@@ -838,11 +832,13 @@ def post_source(data, user_id, session, refresh_source=True):
                 )
                 not_saved_to_group_ids.append(group.id)
                 continue
+
         source = session.scalars(
             Source.select(user)
             .where(Source.obj_id == obj.id)
             .where(Source.group_id == group.id)
         ).first()
+
         if not user.is_admin:
             group_user = session.scalars(
                 GroupUser.select(user)
@@ -873,103 +869,19 @@ def post_source(data, user_id, session, refresh_source=True):
 
     session.commit()
 
-    # TNS AUTO REPORT
-
     # remove from groups that we didn't save to
     groups = [group for group in groups if group.id not in not_saved_to_group_ids]
-
+    # Shared mutable list to ensure publish_to target is triggered only once across all groups if needed
+    publish_to = ["TNS", "Hermes", "Public page"]
     for group in groups:
-        # see if there is a tnsrobot_group set up for autosubmission
-        # and if the user has autosubmission set up
-        stmt = (
-            TNSRobotGroup.select(saver_per_group_id[group.id])
-            .join(
-                TNSRobotGroupAutoreporter,
-                TNSRobotGroup.id == TNSRobotGroupAutoreporter.tnsrobot_group_id,
-            )
-            .where(
-                TNSRobotGroup.group_id == group.id,
-                TNSRobotGroup.auto_report,
-                TNSRobotGroupAutoreporter.group_user_id.in_(
-                    sa.select(GroupUser.id).where(
-                        GroupUser.user_id == saver_per_group_id[group.id].id,
-                        GroupUser.group_id == group.id,
-                    )
-                ),
-            )
+        auto_source_publishing(
+            session=session,
+            saver=saver_per_group_id[group.id],
+            obj=obj,
+            group_id=group.id,
+            publish_to=publish_to,
         )
-        if saver_per_group_id[group.id].is_bot:
-            stmt = stmt.where(TNSRobotGroup.auto_report_allow_bots.is_(True))
-        tnsrobot_group_with_autoreporter = session.scalars(stmt).first()
 
-        if tnsrobot_group_with_autoreporter is not None:
-            # add a request to submit to TNS for only the first group we save to
-            # that has access to TNSRobot and auto_report is True
-            #
-            # but first, check if there is already a submission request
-            # for this object and tnsrobot that is:
-            # 1. pending
-            # 2. processing
-            # 3. submitted
-            # 4. complete
-            # if so, do not add another request
-            existing_submission_request = session.scalars(
-                TNSRobotSubmission.select(session.user_or_token).where(
-                    TNSRobotSubmission.obj_id == obj.id,
-                    TNSRobotSubmission.tnsrobot_id
-                    == tnsrobot_group_with_autoreporter.tnsrobot_id,
-                    sa.or_(
-                        TNSRobotSubmission.status == "pending",
-                        TNSRobotSubmission.status == "processing",
-                        TNSRobotSubmission.status.like("submitted%"),
-                        TNSRobotSubmission.status.like("complete%"),
-                    ),
-                )
-            ).first()
-            if existing_submission_request is not None:
-                log(
-                    f"Submission request already exists for obj_id {obj.id} and tnsrobot_id {tnsrobot_group_with_autoreporter.tnsrobot_id}"
-                )
-            else:
-                submission_request = TNSRobotSubmission(
-                    obj_id=obj.id,
-                    tnsrobot_id=tnsrobot_group_with_autoreporter.tnsrobot_id,
-                    user_id=saver_per_group_id[group.id].id,
-                    auto_submission=True,
-                )
-                session.add(submission_request)
-                session.commit()
-                log(
-                    f"Added TNSRobotSubmission request for obj_id {obj.id} saved to group {group.id} with tnsrobot_id {tnsrobot_group_with_autoreporter.tnsrobot_id} for user_id {user.id}"
-                )
-                break
-
-        # if there is releases with auto_publish_enabled and one of the source groups,
-        # a public page is published
-        releases = session.scalars(
-            sa.select(PublicRelease).where(
-                PublicRelease.groups.any(id=group.id),
-                PublicRelease.auto_publish_enabled,
-            )
-        ).all()
-        if releases is not None and len(releases) > 0:
-            from .public_pages.public_source_page import async_post_public_source_page
-
-            dict_obj = obj.to_dict()
-            dict_obj["thumbnails"] = [
-                thumbnail.to_dict()
-                for thumbnail in session.scalars(
-                    sa.select(Thumbnail).where(Thumbnail.obj_id == obj.id)
-                ).all()
-            ]
-            for release in releases:
-                run_async(
-                    async_post_public_source_page,
-                    options=release.options,
-                    source=dict_obj,
-                    release=release,
-                    user_id=user.id,
-                )
     if refresh_source:
         flow = Flow()
         flow.push(
@@ -1245,14 +1157,6 @@ class SourceHandler(BaseHandler):
             schema:
               type: integer
             description: Page number for paginated query results. Defaults to 1
-          - in: query
-            name: totalMatches
-            nullable: true
-            schema:
-              type: integer
-            description: |
-              Used only in the case of paginating query results - if provided, this
-              allows for avoiding a potentially expensive query.count() call.
           - in: query
             name: startDate
             nullable: true
@@ -1946,7 +1850,6 @@ class SourceHandler(BaseHandler):
         has_been_labelled = self.get_query_argument("hasBeenLabelled", False)
         has_not_been_labelled = self.get_query_argument("hasNotBeenLabelled", False)
         current_user_labeller = self.get_query_argument("currentUserLabeller", False)
-        total_matches = self.get_query_argument("totalMatches", None)
         is_token_request = isinstance(self.current_user, Token)
 
         if obj_id is not None:
@@ -2071,7 +1974,6 @@ class SourceHandler(BaseHandler):
                     group_ids=group_ids,
                     user_accessible_group_ids=user_accessible_group_ids,
                     save_summary=save_summary,
-                    total_matches=total_matches,
                     includeGeoJSON=includeGeoJSON,
                     use_cache=use_cache,
                     query_id=query_id,

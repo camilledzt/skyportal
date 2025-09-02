@@ -6,6 +6,7 @@ from .slack import SLACKAPI
 
 # Instrument Specific APIs
 from .atlas import ATLASAPI
+from .blanco import NEWFIRMAPI
 from .colibri import COLIBRIAPI
 from .gemini import GEMINIAPI
 from .growth_india import GROWTHINDIAMMAAPI
@@ -21,6 +22,7 @@ from .swift import UVOTXRTAPI, UVOTXRTMMAAPI
 from .tarot import TAROTAPI
 from .tess import TESSAPI
 from .trt import TRTAPI
+from .ttt import TTTAPI
 from .winter import WINTERAPI
 from .ztf import ZTFAPI, ZTFMMAAPI
 from .mmt.binospec import BINOSPECAPI
@@ -61,6 +63,8 @@ APIS = (
     GEMINIAPI,
     BINOSPECAPI,
     MMIRSAPI,
+    TTTAPI,
+    NEWFIRMAPI,
 )
 
 # Listeners, listed in implementation order, to keep matching enum in db stable
