@@ -764,7 +764,7 @@ def get_values_table_and_condition(df, ignore_flux=False):
             Photometry.obj_id == values_table.c.obj_id,
             Photometry.instrument_id == values_table.c.instrument_id,
             Photometry.origin == values_table.c.origin,
-            Photometry.mjd == values_table.c.mjd,
+            sa.func.abs(Photometry.mjd - values_table.c.mjd) < 1e-6,
         )
     else:
         # here we use the existing deduplication index
@@ -772,7 +772,7 @@ def get_values_table_and_condition(df, ignore_flux=False):
             Photometry.obj_id == values_table.c.obj_id,
             Photometry.instrument_id == values_table.c.instrument_id,
             Photometry.origin == values_table.c.origin,
-            Photometry.mjd == values_table.c.mjd,
+            sa.func.abs(Photometry.mjd - values_table.c.mjd) < 1e-6,
             Photometry.fluxerr == values_table.c.fluxerr,
             Photometry.flux == values_table.c.flux,
         )
@@ -1129,6 +1129,11 @@ def add_external_photometry(
         )
         if duplicates in ["ignore", "update"]:
             values_table, condition = get_values_table_and_condition(df)
+
+            # Log the condition being used for duplicate detection
+            log(f"Duplicate detection condition: {condition}")
+            log(f"Checking {len(df)} photometry points for duplicates")
+
             duplicated_photometry = (
                 session.execute(
                     sa.select(values_table.c.pdidx, Photometry)
@@ -1140,12 +1145,50 @@ def add_external_photometry(
                 .all()
             )
             duplicated_photometry_pdidx = {g[0] for g in duplicated_photometry}
+
+            # Log detailed results for each point
+            log(
+                f"Found {len(duplicated_photometry_pdidx)} duplicate points out of {len(df)}"
+            )
+
+            for idx, row in df.iterrows():
+                if idx in duplicated_photometry_pdidx:
+                    # Find the matching duplicate photometry for detailed logging
+                    matching_duplicate = None
+                    for df_idx, phot in duplicated_photometry:
+                        if df_idx == idx:
+                            matching_duplicate = phot
+                            break
+
+                    if matching_duplicate:
+                        log(
+                            f"  × DUPLICATE point {idx}: obj_id={row['obj_id']}, "
+                            f"mjd={row['mjd']:.10f}, instrument_id={row['instrument_id']}, "
+                            f"origin={row['origin']}, matches existing id={matching_duplicate.id} "
+                            f"(existing mjd={matching_duplicate.mjd:.10f}, "
+                            f"mjd_diff={abs(row['mjd'] - matching_duplicate.mjd):.12f})"
+                        )
+                    else:
+                        log(
+                            f"  × DUPLICATE point {idx}: obj_id={row['obj_id']}, "
+                            f"mjd={row['mjd']:.10f}, instrument_id={row['instrument_id']}, "
+                            f"origin={row['origin']}"
+                        )
+                else:
+                    log(
+                        f"  ✓ NEW point {idx}: obj_id={row['obj_id']}, "
+                        f"mjd={row['mjd']:.10f}, instrument_id={row['instrument_id']}, "
+                        f"origin={row['origin']}"
+                    )
+
             if len(duplicated_photometry_pdidx) > 0:
                 new_photometry_df_idxs = [
                     i for i in list(df.index) if i not in duplicated_photometry_pdidx
                 ]
             else:
                 new_photometry_df_idxs = list(df.index)
+
+            log(f"Will insert {len(new_photometry_df_idxs)} new points")
 
             id_map = {}
             id_map_no_update_needed = {}

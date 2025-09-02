@@ -1,0 +1,29 @@
+# Hermes SkyPortal Synchronization Service Configuration
+# This file contains the configuration for the Hermes sync service
+
+hermes_sync:
+  # SCiMMA credentials (required)
+  username: # Set your SCiMMA username here
+  password: # Set your SCiMMA password here
+
+  # Kafka configuration
+  server_url: "kafka.scimma.org"
+  topic: "skyportal.skyportal_test"
+
+  # Consumption settings
+  from_start: false
+  max_age_days: null # Skip messages older than N days (null = no limit)
+
+  # SkyPortal API configuration
+  skyportal_url: "http://localhost:5000" # Default SkyPortal URL
+  skyportal_token: null # Set your API token here
+
+  # Default group IDs and instrument ID
+  group_ids: [1] # List of group IDs to assign sources to
+  instrument_id: 1 # Default instrument ID for photometry
+
+  # Logging
+  log_level: "INFO" # DEBUG, INFO, WARNING, ERROR
+
+  # Service control
+  dry_run: false # Set to true to only display messages without syncing to SkyPortal
