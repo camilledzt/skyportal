@@ -328,9 +328,6 @@ def serialize(
 
     filter = phot.filter
 
-    if filter == "swiftxrt":
-        outsys = "ab"
-
     magsys_db = sncosmo.get_magsystem("ab")
     outsys = sncosmo.get_magsystem(outsys)
 
@@ -493,8 +490,9 @@ def standardize_photometry_data(data):
     else:
         kind = "mag"
 
-    data.pop("group_ids", None)
-    data.pop("stream_ids", None)
+    # not used here
+    _ = data.pop("group_ids", None)
+    _ = data.pop("stream_ids", None)
 
     if allscalar(data):
         data = [data]
@@ -565,12 +563,7 @@ def standardize_photometry_data(data):
             )
 
         for field in ["mag", "magerr", "limiting_mag"]:
-            try:
-                infinite = np.isinf(df[field].values)
-            except TypeError:
-                raise ValidationError(
-                    f"Some values in the {field} field are not numeric."
-                )
+            infinite = np.isinf(df[field].values)
             if any(infinite):
                 first_offender = np.argwhere(infinite)[0, 0]
                 packet = df.iloc[first_offender].to_dict()
@@ -771,7 +764,7 @@ def get_values_table_and_condition(df, ignore_flux=False):
             Photometry.obj_id == values_table.c.obj_id,
             Photometry.instrument_id == values_table.c.instrument_id,
             Photometry.origin == values_table.c.origin,
-            sa.func.abs(Photometry.mjd - values_table.c.mjd) < 1e-6,
+            Photometry.mjd == values_table.c.mjd,
         )
     else:
         # here we use the existing deduplication index
@@ -779,7 +772,7 @@ def get_values_table_and_condition(df, ignore_flux=False):
             Photometry.obj_id == values_table.c.obj_id,
             Photometry.instrument_id == values_table.c.instrument_id,
             Photometry.origin == values_table.c.origin,
-            sa.func.abs(Photometry.mjd - values_table.c.mjd) < 1e-6,
+            Photometry.mjd == values_table.c.mjd,
             Photometry.fluxerr == values_table.c.fluxerr,
             Photometry.flux == values_table.c.flux,
         )
@@ -1136,11 +1129,6 @@ def add_external_photometry(
         )
         if duplicates in ["ignore", "update"]:
             values_table, condition = get_values_table_and_condition(df)
-
-            # Log the condition being used for duplicate detection
-            log(f"Duplicate detection condition: {condition}")
-            log(f"Checking {len(df)} photometry points for duplicates")
-
             duplicated_photometry = (
                 session.execute(
                     sa.select(values_table.c.pdidx, Photometry)
@@ -1152,50 +1140,12 @@ def add_external_photometry(
                 .all()
             )
             duplicated_photometry_pdidx = {g[0] for g in duplicated_photometry}
-
-            # Log detailed results for each point
-            log(
-                f"Found {len(duplicated_photometry_pdidx)} duplicate points out of {len(df)}"
-            )
-
-            for idx, row in df.iterrows():
-                if idx in duplicated_photometry_pdidx:
-                    # Find the matching duplicate photometry for detailed logging
-                    matching_duplicate = None
-                    for df_idx, phot in duplicated_photometry:
-                        if df_idx == idx:
-                            matching_duplicate = phot
-                            break
-
-                    if matching_duplicate:
-                        log(
-                            f"  × DUPLICATE point {idx}: obj_id={row['obj_id']}, "
-                            f"mjd={row['mjd']:.10f}, instrument_id={row['instrument_id']}, "
-                            f"origin={row['origin']}, matches existing id={matching_duplicate.id} "
-                            f"(existing mjd={matching_duplicate.mjd:.10f}, "
-                            f"mjd_diff={abs(row['mjd'] - matching_duplicate.mjd):.12f})"
-                        )
-                    else:
-                        log(
-                            f"  × DUPLICATE point {idx}: obj_id={row['obj_id']}, "
-                            f"mjd={row['mjd']:.10f}, instrument_id={row['instrument_id']}, "
-                            f"origin={row['origin']}"
-                        )
-                else:
-                    log(
-                        f"  ✓ NEW point {idx}: obj_id={row['obj_id']}, "
-                        f"mjd={row['mjd']:.10f}, instrument_id={row['instrument_id']}, "
-                        f"origin={row['origin']}"
-                    )
-
             if len(duplicated_photometry_pdidx) > 0:
                 new_photometry_df_idxs = [
                     i for i in list(df.index) if i not in duplicated_photometry_pdidx
                 ]
             else:
                 new_photometry_df_idxs = list(df.index)
-
-            log(f"Will insert {len(new_photometry_df_idxs)} new points")
 
             id_map = {}
             id_map_no_update_needed = {}
@@ -1697,6 +1647,8 @@ class PhotometryHandler(BaseHandler):
 
     @auth_or_token
     def get(self, photometry_id):
+        # The full docstring/API spec is below as an f-string
+
         with self.Session() as session:
             phot = session.scalars(
                 Photometry.select(session.user_or_token).where(
@@ -2261,7 +2213,28 @@ class PhotometryRangeHandler(BaseHandler):
 class PhotometryOriginHandler(BaseHandler):
     @auth_or_token
     def get(self):
-        return self.error("This feature is deprecated")
+        """
+        ---
+        summary: Get all photometry origins
+        description: Get all photometry origins
+        tags:
+          - photometry
+        responses:
+          200:
+            content:
+              application/json:
+                schema: Success
+          400:
+            content:
+              application/json:
+                schema: Error
+        """
+
+        with self.Session() as session:
+            origins = (
+                session.scalars(sa.select(Photometry.origin).distinct()).unique().all()
+            )
+            return self.success(data=origins)
 
 
 PhotometryHandler.get.__doc__ = f"""
