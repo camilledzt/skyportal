@@ -920,6 +920,24 @@ const UserManagement = () => {
     },
   ];
 
+  const handleSearchChange = (searchText) => {
+    setQueryInProgress(true);
+
+    const params = {
+      ...fetchParams,
+      userTextSearch: searchText,
+      username: undefined,
+      firstName: undefined,
+      lastName: undefined,
+      pageNumber: 1,
+      numPerPage: rowsPerPage,
+    };
+    dispatch(setUsersManagementFetchParams(params));
+    dispatch(fetchUsersManagement()).then(() => {
+      setQueryInProgress(false);
+    });
+  };
+
   const customToolbar = () => (
     <FormControlLabel
       control={
@@ -941,7 +959,8 @@ const UserManagement = () => {
     responsive: "standard",
     print: true,
     download: true,
-    search: false,
+    search: true,
+    onSearchChange: handleSearchChange,
     selectableRows: "none",
     enableNestedDataAccess: ".",
     sort: true,

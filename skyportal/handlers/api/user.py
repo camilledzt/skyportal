@@ -233,6 +233,12 @@ class UserHandler(BaseHandler):
               type: string
             description: Get users whose email contains this string.
           - in: query
+            name: userTextSearch
+            nullable: true
+            schema:
+              type: string
+            description: Search for users whose username, first name, or last name contains this string (OR search).
+          - in: query
             name: role
             nullable: true
             schema:
@@ -333,6 +339,7 @@ class UserHandler(BaseHandler):
         last_name = self.get_query_argument("lastName", None)
         username = self.get_query_argument("username", None)
         email_address = self.get_query_argument("email", None)
+        user_text_search = self.get_query_argument("userTextSearch", None)
         role = self.get_query_argument("role", None)
         acl = self.get_query_argument("acl", None)
         group = self.get_query_argument("group", None)
@@ -362,12 +369,24 @@ class UserHandler(BaseHandler):
                     )
                 )
 
-            if first_name is not None:
-                stmt = stmt.where(User.first_name.contains(first_name))
-            if last_name is not None:
-                stmt = stmt.where(User.last_name.contains(last_name))
-            if username is not None:
-                stmt = stmt.where(User.username.contains(username))
+            if user_text_search is not None:  # enable OR logic
+                search_pattern = f"%{user_text_search.lower()}%"
+                stmt = stmt.where(
+                    sa.or_(
+                        func.lower(User.username).like(search_pattern),
+                        func.lower(User.first_name).like(search_pattern),
+                        func.lower(User.last_name).like(search_pattern),
+                    )
+                )
+            else:
+                # AND logic
+                if first_name is not None:
+                    stmt = stmt.where(User.first_name.contains(first_name))
+                if last_name is not None:
+                    stmt = stmt.where(User.last_name.contains(last_name))
+                if username is not None:
+                    stmt = stmt.where(User.username.contains(username))
+
             if email_address is not None:
                 stmt = stmt.where(User.contact_email.contains(email_address))
             if role is not None:
