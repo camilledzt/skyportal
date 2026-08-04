@@ -1,0 +1,84 @@
+# broker_connectors: list of independent connector instances.
+#
+# Rules:
+#   - Each connector must have a unique (broker.servers, broker.group_id) pair.
+#     Two connectors on the same broker MUST use different group_ids so each
+#     one maintains its own Kafka offset and processes the full stream.
+#   - A connector cannot serve the same use-case as another one: use distinct
+#     names, topics, and skyportal.group values to make the separation explicit.
+#
+# Available parsers: fink_ztf, fink_lsst
+# (add more by subclassing parsers.base.BaseParser and registering in parsers/__init__.py)
+
+broker_connectors:
+
+  # ── Use-case 1: Fink ZTF kilonova candidates → "KN Candidates" group ──────
+  - name: fink-ztf-kn
+    broker:
+      servers: fink-broker.ijclab.in2p3.fr:24499
+      group_id: icare_fink_ztf_kn          # unique per use-case on this broker
+      username: my_fink_username
+      password: my_fink_password
+      security_protocol: SASL_SSL
+      sasl_mechanism: SCRAM-SHA-512
+      auto_offset_reset: earliest
+    topics:
+      - fink_kn_candidates_ztf
+      - fink_early_kn_candidates_ztf
+      - fink_rate_based_kn_candidates_ztf
+    parser: fink_ztf
+    poll_timeout: 5.0
+    skyportal:
+      url: http://localhost:5000
+      group: "KN Candidates"
+      token: my-skyportal-token
+      whitelisted: false
+
+  # ── Use-case 2: Fink ZTF supernovae → different group, different group_id ──
+  - name: fink-ztf-sn
+    broker:
+      servers: fink-broker.ijclab.in2p3.fr:24499
+      group_id: icare_fink_ztf_sn          # different group_id → independent offset
+      username: my_fink_username
+      password: my_fink_password
+      security_protocol: SASL_SSL
+      sasl_mechanism: SCRAM-SHA-512
+    topics:
+      - fink_sn_candidates_ztf
+    parser: fink_ztf
+    skyportal:
+      url: http://localhost:5000
+      group: "SN Candidates"
+
+  # ── Use-case 3: Fink LSST extragalactic candidates ───────────────────────
+  - name: fink-lsst-extragalactic
+    broker:
+      servers: kafka-lsst.fink-broker.org:24499
+      group_id: group_id
+      username: testuser
+      password: null                          # unauthenticated
+      auto_offset_reset: earliest
+    topics:
+      - fink_extragalactic_new_candidate_lsst
+    parser: fink_lsst
+    taxonomy: /path/to/fink_taxonomy.yaml   # optional; omit to skip classification
+    skyportal:
+      url: http://localhost:5000
+      token: 2a32eda6-f19f-40ba-bc71-5c659888e87a
+      group: Fink
+      stream: LSST          # name of the pre-existing SkyPortal stream; omit to skip
+      filter:               # name of the pre-existing SkyPortal filter; omit to skip
+      whitelisted: false
+
+  # ── Use-case 4: A completely different broker ─────────────────────────────
+  - name: custom-broker-alerts
+    broker:
+      servers: custom-kafka.example.org:9092
+      group_id: icare_custom
+      # No username/password → plain unauthenticated connection
+    topics:
+      - my_alert_topic
+    parser: fink_ztf    # swap for your own parser once implemented
+    skyportal:
+      url: http://localhost:5000
+      group: "Custom Alerts"
