@@ -274,6 +274,12 @@ class ClassificationHandler(BaseHandler):
         end_date = self.get_query_argument("endDate", None)
         include_taxonomy = self.get_query_argument("includeTaxonomy", False)
 
+        if classification_id is not None:
+            try:
+                classification_id = int(classification_id)
+            except (ValueError, TypeError):
+                return self.error(f"Invalid classification ID: {classification_id}")
+
         async with self.AsyncSession() as session:
             if classification_id is not None:
                 options = []
@@ -464,6 +470,11 @@ class ClassificationHandler(BaseHandler):
               application/json:
                 schema: Error
         """
+        try:
+            classification_id = int(classification_id)
+        except (ValueError, TypeError):
+            return self.error(f"Invalid classification ID: {classification_id}")
+
         async with self.AsyncSession() as session:
             c = await session.scalar(
                 Classification.select(session.user_or_token, mode="update")
@@ -889,6 +900,11 @@ class ClassificationVotesHandler(BaseHandler):
               application/json:
                 schema: Success
         """
+        try:
+            classification_id = int(classification_id)
+        except (ValueError, TypeError):
+            return self.error(f"Invalid classification ID: {classification_id}")
+
         data = self.get_json()
         vote = data.get("vote")
         if vote is None:
@@ -970,6 +986,11 @@ class ClassificationVotesHandler(BaseHandler):
               application/json:
                 schema: Success
         """
+        try:
+            classification_id = int(classification_id)
+        except (ValueError, TypeError):
+            return self.error(f"Invalid classification ID: {classification_id}")
+
         async with self.AsyncSession() as session:
             classification = await session.scalar(
                 Classification.select(session.user_or_token)
