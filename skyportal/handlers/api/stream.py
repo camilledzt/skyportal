@@ -334,6 +334,17 @@ class StreamUserHandler(BaseHandler):
                 .where(StreamUser.user_id == user_id)
             )
             if su is None:
+                # Distinguish "record missing" from "blocked by group membership"
+                exists = await session.scalar(
+                    sa.select(StreamUser)
+                    .where(StreamUser.stream_id == stream_id)
+                    .where(StreamUser.user_id == user_id)
+                )
+                if exists is not None:
+                    return self.error(
+                        "Cannot remove stream access: this user belongs to a group "
+                        "that requires access to this stream."
+                    )
                 return self.error("Stream user does not exist.")
             await session.delete(su)
             await session.commit()
